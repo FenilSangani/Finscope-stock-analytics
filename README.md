@@ -11,10 +11,16 @@ rather than estimating it.
 
 ## Live demo
 
-| | |
+**https://finscope-stock-analytics.vercel.app**
+
+| Piece | URL |
 |---|---|
-| App | _add your Vercel URL here_ |
-| API | _add your Vercel URL here_ |
+| App | https://finscope-stock-analytics.vercel.app |
+| API | https://finscope-api-six.vercel.app |
+| Market data service | https://finscope-market.vercel.app |
+
+Register with any email to get a wallet of your own; nothing is verified and no
+real money is involved.
 
 ## What it does
 
@@ -88,8 +94,8 @@ placeholder numbers are ever displayed.
 You need Node 18+, Python 3.11+, and a free MongoDB Atlas cluster.
 
 ```bash
-git clone https://github.com/<your-username>/finscope-stock-analytics.git
-cd finscope-stock-analytics
+git clone https://github.com/FenilSangani/Finscope-stock-analytics.git
+cd Finscope-stock-analytics
 ```
 
 **1. Market data service**
