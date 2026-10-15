@@ -21,6 +21,25 @@ app.add_middleware(
 )
 
 
+@app.get("/")
+def index():
+    """A plain index, so hitting the service root says what it is."""
+    return {
+        "service": "FinScope Market Data Service",
+        "status": "ok",
+        "endpoints": [
+            "/health",
+            "/market/quotes?symbols=RELIANCE,TCS",
+            "/market/closes?symbols=RELIANCE&period=1Y",
+            "/history/{symbol}?period=3Y",
+            "/quotes?symbols=RELIANCE",
+            "/symbols?q=tata",
+            "/compare?symbols=TCS,INFY",
+            "/stock/{symbol}",
+        ],
+    }
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
@@ -166,3 +185,14 @@ def stock(symbol: str):
         ]
 
     return data
+
+
+# Registered last, so it only sees requests no real endpoint matched. It names
+# the path that actually arrived, which is the quickest way to tell a typo
+# apart from a host rewriting the path before the app ever sees it.
+@app.get("/{unmatched:path}")
+def not_found(unmatched: str):
+    raise HTTPException(
+        status_code=404,
+        detail=f"No endpoint at '/{unmatched}'. See / for the list of endpoints.",
+    )
