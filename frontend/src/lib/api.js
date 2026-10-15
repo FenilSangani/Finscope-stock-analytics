@@ -137,6 +137,10 @@ export function fetchMarketQuotes(symbols) {
   return get(`/api/market/quotes?symbols=${encodeURIComponent(symbols.join(','))}`)
 }
 
+export function fetchMarketStatus() {
+  return get('/api/market/status')
+}
+
 export function fetchMarketCloses(symbols, period = '1Y') {
   return get(`/api/market/closes?symbols=${encodeURIComponent(symbols.join(','))}&period=${period}`)
 }

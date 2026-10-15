@@ -17,6 +17,7 @@ import {
   AlertCircle,
   Briefcase,
   CheckCircle2,
+  Clock,
   Eye,
   EyeOff,
   Info,
@@ -33,12 +34,13 @@ import Sidebar from '../components/dashboard/Sidebar'
 import {
   fetchMarketCloses,
   fetchMarketQuotes,
+  fetchMarketStatus,
   fetchPaperAccount,
   placePaperOrder,
   resetPaperAccount,
   searchSymbols,
 } from '../lib/api'
-import { buildValueCurve, shortLabel } from '../lib/portfolio'
+import { buildValueCurve, dayPnlFor, shortLabel } from '../lib/portfolio'
 
 ChartJS.register(
   ArcElement,
@@ -89,15 +91,10 @@ function stamp(date) {
   })
 }
 
-/**
- * NSE trades 9:15 to 15:30 IST on weekdays. The offset is applied to UTC so the
- * badge is correct even if the computer is not set to Indian time.
- */
-function marketOpen(now = new Date()) {
-  const ist = new Date(now.getTime() + (330 + now.getTimezoneOffset()) * 60000)
-  const day = ist.getDay()
-  const minutes = ist.getHours() * 60 + ist.getMinutes()
-  return day >= 1 && day <= 5 && minutes >= 555 && minutes <= 930
+const STATUS_BADGES = {
+  EXECUTED: { label: 'Executed', className: 'bg-emerald-50 text-emerald-700' },
+  PENDING: { label: 'Waiting for open', className: 'bg-amber-50 text-amber-700' },
+  REJECTED: { label: 'Rejected', className: 'bg-red-50 text-red-600' },
 }
 
 function Section({ icon: Icon, title, subtitle, children, right }) {
@@ -144,13 +141,35 @@ export default function PaperTradingPage() {
 
   const [showValues, setShowValues] = useState(true)
   const [confirmReset, setConfirmReset] = useState(false)
+  const [market, setMarket] = useState(null)
 
   // Stock picker, backed by the full NSE list.
   const [showPicker, setShowPicker] = useState(false)
   const [pickerQuery, setPickerQuery] = useState('')
   const [pickerResults, setPickerResults] = useState([])
 
-  const isOpen = marketOpen()
+  const isOpen = market?.open ?? false
+
+  // Whether the exchange is really trading comes from the server, which checks
+  // the latest session date as well as the clock, so a holiday reads correctly.
+  useEffect(() => {
+    let cancelled = false
+    const load = () =>
+      fetchMarketStatus()
+        .then((data) => {
+          if (!cancelled) setMarket(data)
+        })
+        .catch(() => {
+          /* keep the last known state */
+        })
+
+    load()
+    const timer = setInterval(load, 60000)
+    return () => {
+      cancelled = true
+      clearInterval(timer)
+    }
+  }, [])
 
   // Load the wallet once; every later change comes back from the server.
   useEffect(() => {
@@ -273,7 +292,6 @@ export default function PaperTradingPage() {
     // Until the first quote arrives the position is shown at its own cost, so
     // the page never invents a profit it cannot back up.
     const ltp = quote?.price ?? h.avgPrice
-    const prevClose = quote?.prevClose ?? ltp
     const invested = h.qty * h.avgPrice
     const value = h.qty * ltp
 
@@ -285,9 +303,11 @@ export default function PaperTradingPage() {
       value,
       pnl: value - invested,
       pnlPct: invested === 0 ? 0 : ((value - invested) / invested) * 100,
-      dayPnl: h.qty * (ltp - prevClose),
+      dayPnl: dayPnlFor(h, account?.orders || [], quote),
     }
   })
+
+  const pendingCount = (account?.orders || []).filter((o) => o.status === 'PENDING').length
 
   const cash = account?.cash ?? 0
   const realised = account?.realised ?? 0
@@ -322,6 +342,15 @@ export default function PaperTradingPage() {
       const data = await placePaperOrder({ symbol: ticketSymbol, action: side, qty: orderQty })
       setAccount(data.account)
       setQty('1')
+
+      if (data.queued) {
+        const q = data.queued
+        setFlash({
+          tone: 'queued',
+          text: `${q.action === 'BUY' ? 'Buy' : 'Sell'} ${q.qty} ${q.symbol} queued — it will fill when the market opens ${q.opensAt}, at whatever the price is then.`,
+        })
+        return
+      }
 
       const { fill } = data
       setFlash({
@@ -555,13 +584,24 @@ export default function PaperTradingPage() {
                 className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-semibold ${
                   isOpen ? 'bg-emerald-50 text-emerald-700' : 'bg-gray-100 text-gray-600'
                 }`}
+                title={
+                  isOpen
+                    ? 'NSE is trading'
+                    : market?.opensAt
+                      ? `Opens ${market.opensAt}`
+                      : 'NSE is closed'
+                }
               >
                 <span
                   className={`h-1.5 w-1.5 rounded-full ${
                     isOpen ? 'animate-pulse bg-emerald-500' : 'bg-gray-400'
                   }`}
                 />
-                {isOpen ? 'Market open' : 'Market closed'}
+                {isOpen
+                  ? 'Market open'
+                  : market?.holiday
+                    ? 'Market holiday'
+                    : 'Market closed'}
               </span>
               <button
                 onClick={resetWallet}
@@ -583,11 +623,15 @@ export default function PaperTradingPage() {
               className={`flex items-center gap-2.5 rounded-2xl border px-5 py-3.5 text-sm font-medium ${
                 flash.tone === 'error'
                   ? 'border-red-200 bg-red-50/70 text-red-700'
-                  : 'border-emerald-200 bg-emerald-50/70 text-emerald-800'
+                  : flash.tone === 'queued'
+                    ? 'border-amber-200 bg-amber-50/70 text-amber-800'
+                    : 'border-emerald-200 bg-emerald-50/70 text-emerald-800'
               }`}
             >
               {flash.tone === 'error' ? (
                 <AlertCircle className="h-4 w-4 shrink-0" />
+              ) : flash.tone === 'queued' ? (
+                <Clock className="h-4 w-4 shrink-0" />
               ) : (
                 <CheckCircle2 className="h-4 w-4 shrink-0" />
               )}
@@ -807,7 +851,11 @@ export default function PaperTradingPage() {
                 title="Order History"
                 subtitle={
                   account.orders.length
-                    ? `${account.orders.length} orders — latest first`
+                    ? `${account.orders.length} orders — latest first${
+                        pendingCount
+                          ? ` · ${pendingCount} waiting for the open`
+                          : ''
+                      }`
                     : 'Your filled orders will be listed here'
                 }
               >
@@ -817,7 +865,7 @@ export default function PaperTradingPage() {
                   </p>
                 ) : (
                   <div className="max-h-96 overflow-auto">
-                    <table className="w-full min-w-[680px] text-left">
+                    <table className="w-full min-w-[820px] text-left">
                       <thead className="sticky top-0 bg-white">
                         <tr className="border-b border-gray-200">
                           {[
@@ -828,6 +876,7 @@ export default function PaperTradingPage() {
                             'Qty',
                             'Price',
                             'Amount',
+                            'Status',
                             'Booked P&L',
                           ].map((h) => (
                             <th
@@ -865,8 +914,26 @@ export default function PaperTradingPage() {
                             </td>
                             <td className="py-3 text-sm font-semibold text-gray-900">{o.symbol}</td>
                             <td className="py-3 text-sm text-gray-700">{o.qty}</td>
-                            <td className="py-3 text-sm text-gray-700">{inr(o.price)}</td>
-                            <td className="py-3 text-sm text-gray-700">{inr(o.amount)}</td>
+                            <td className="py-3 text-sm text-gray-700">
+                              {o.price === null ? <span className="text-gray-300">—</span> : inr(o.price)}
+                            </td>
+                            <td className="py-3 text-sm text-gray-700">
+                              {o.amount === null ? (
+                                <span className="text-gray-300">—</span>
+                              ) : (
+                                inr(o.amount)
+                              )}
+                            </td>
+                            <td className="py-3">
+                              <span
+                                title={o.note || undefined}
+                                className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-semibold ${
+                                  (STATUS_BADGES[o.status] || STATUS_BADGES.EXECUTED).className
+                                }`}
+                              >
+                                {(STATUS_BADGES[o.status] || STATUS_BADGES.EXECUTED).label}
+                              </span>
+                            </td>
                             <td className="py-3 text-sm">
                               {o.realised === null ? (
                                 <span className="text-gray-300">—</span>
@@ -899,7 +966,9 @@ export default function PaperTradingPage() {
                   </span>
                   <div>
                     <h2 className="text-base font-bold text-gray-900">Place an Order</h2>
-                    <p className="mt-0.5 text-sm text-gray-500">Fills at the live market price</p>
+                    <p className="mt-0.5 text-sm text-gray-500">
+                      {isOpen ? 'Fills at the live market price' : 'Queued until the market opens'}
+                    </p>
                   </div>
                 </div>
 
@@ -1018,9 +1087,23 @@ export default function PaperTradingPage() {
                   </div>
 
                   <div className="flex items-center justify-between border-t border-gray-100 pt-4">
-                    <span className="text-sm text-gray-500">Order value</span>
+                    <span className="text-sm text-gray-500">
+                      {isOpen ? 'Order value' : 'Approximate value'}
+                    </span>
                     <span className="text-lg font-bold text-gray-900">{inr(orderValue)}</span>
                   </div>
+
+                  {!isOpen && (
+                    <div className="flex items-start gap-2.5 rounded-xl bg-amber-50 px-3.5 py-3 text-xs text-amber-800">
+                      <Clock className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                      <p>
+                        The market is {market?.holiday ? 'closed for a holiday' : 'closed'}. This
+                        order will be held and filled at the opening price
+                        {market?.opensAt ? ` ${market.opensAt}` : ''}, not at the last closing
+                        price.
+                      </p>
+                    </div>
+                  )}
 
                   {ticketError && orderQty > 0 && (
                     <p className="rounded-xl bg-red-50 px-3.5 py-2.5 text-xs font-medium text-red-600">
@@ -1038,7 +1121,9 @@ export default function PaperTradingPage() {
                     }`}
                   >
                     {busy && <Loader2 className="h-4 w-4 animate-spin" />}
-                    {side === 'BUY' ? 'Buy' : 'Sell'} {ticketSymbol}
+                    {isOpen
+                      ? `${side === 'BUY' ? 'Buy' : 'Sell'} ${ticketSymbol}`
+                      : `Queue ${side === 'BUY' ? 'buy' : 'sell'} for the open`}
                   </button>
                 </div>
               </section>
@@ -1079,9 +1164,10 @@ export default function PaperTradingPage() {
             <Info className="mt-0.5 h-4 w-4 shrink-0 text-gray-400" />
             <p>
               Prices come from Yahoo Finance and can be delayed by a few minutes, so a fill here
-              may not match the exact price on the exchange. Orders fill instantly in full and
-              brokerage, taxes and slippage are ignored. The money is virtual — nothing is sent to
-              a real broker.
+              may not match the exact price on the exchange. Orders placed while the market is
+              shut wait for the next session and fill at the price then. Orders fill instantly and
+              in full, and brokerage, taxes and slippage are ignored. The money is virtual —
+              nothing is sent to a real broker.
             </p>
           </div>
         </main>

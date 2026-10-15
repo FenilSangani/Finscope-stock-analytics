@@ -36,6 +36,25 @@ def _num(value):
     return None if math.isnan(f) or math.isinf(f) else f
 
 
+def _market_cap(info: dict, price: float | None) -> float | None:
+    """Market capitalisation, worked out from share count if Yahoo omits it.
+
+    Yahoo drops `marketCap` from its summary now and then — the same stock can
+    have it one minute and not the next — which left the figure blank on screen.
+    Shares outstanding times the live price is the same number, so the display
+    stays filled in instead of showing a dash for no good reason.
+    """
+    direct = _num(info.get("marketCap"))
+    if direct:
+        return direct
+
+    shares = _num(info.get("sharesOutstanding")) or _num(info.get("impliedSharesOutstanding"))
+    if shares and price:
+        return shares * price
+
+    return None
+
+
 def _row(frame: pd.DataFrame, *names):
     """First matching row of a yfinance statement, as a list of floats."""
     if frame is None or frame.empty:
@@ -328,6 +347,8 @@ def fetch_stock(symbol: str) -> dict | None:
             return None
         return round(value * (fx if convert else 1) / CRORE)
 
+    market_cap = _market_cap(info, price)
+
     payload = {
         "symbol": symbol,
         "name": info.get("longName"),
@@ -338,7 +359,7 @@ def fetch_stock(symbol: str) -> dict | None:
         "change": change,
         "changePct": change_pct,
         # Market cap follows the share price currency, not the statements.
-        "marketCap": crore(_num(info.get("marketCap")), convert=False),
+        "marketCap": crore(market_cap, convert=False),
         "financialCurrency": financial_currency,
         "high52": _num(info.get("fiftyTwoWeekHigh")),
         "low52": _num(info.get("fiftyTwoWeekLow")),
@@ -462,9 +483,7 @@ def fetch_quote(symbol: str) -> dict | None:
         "changePct": round((change / prev_close) * 100, 2) if prev_close else 0,
         "peRatio": _num(info.get("trailingPE")),
         "roe": round(roe * 100, 2) if roe is not None else None,
-        "marketCap": round(_num(info.get("marketCap")) / CRORE)
-        if _num(info.get("marketCap"))
-        else None,
+        "marketCap": round(cap / CRORE) if (cap := _market_cap(info, price)) else None,
     }
     cache.set(f"quote:{symbol}", quote, ttl_seconds=900)
     return quote

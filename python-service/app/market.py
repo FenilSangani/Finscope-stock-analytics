@@ -80,13 +80,17 @@ def fetch_quotes(symbols: list[str]) -> list[dict]:
                 if symbol not in frame.columns:
                     continue
 
-                series = [_num(v) for v in frame[symbol].tolist()]
-                series = [v for v in series if v is not None]
-                if not series:
+                column = frame[symbol]
+                pairs = [
+                    (stamp, value)
+                    for stamp, raw in zip(column.index, column.tolist())
+                    if (value := _num(raw)) is not None
+                ]
+                if not pairs:
                     continue
 
-                price = round(series[-1], 2)
-                prev = round(series[-2], 2) if len(series) > 1 else price
+                price = round(pairs[-1][1], 2)
+                prev = round(pairs[-2][1], 2) if len(pairs) > 1 else price
                 change = round(price - prev, 2)
 
                 cache.set(
@@ -98,6 +102,10 @@ def fetch_quotes(symbols: list[str]) -> list[dict]:
                         "prevClose": prev,
                         "change": change,
                         "changePct": round((change / prev) * 100, 2) if prev else 0,
+                        # The session this price belongs to. If it is not today
+                        # then the exchange has not traded today, which is how
+                        # the app spots a holiday without keeping a holiday list.
+                        "asOf": pairs[-1][0].strftime("%Y-%m-%d"),
                     },
                     ttl_seconds=QUOTE_TTL,
                 )

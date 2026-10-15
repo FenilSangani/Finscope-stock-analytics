@@ -3,24 +3,31 @@ const PaperAccount = require('../models/PaperAccount')
 const asyncHandler = require('../middleware/asyncHandler')
 const requireAuth = require('../middleware/requireAuth')
 const { fetchQuotes, cleanSymbol: clean } = require('../utils/market')
+const { isTrading, nextOpenLabel } = require('../utils/marketHours')
+const { fill, processPending, round2 } = require('../utils/paperOrders')
 
 const router = express.Router()
 
 const { STARTING_CAPITAL } = PaperAccount
 
 const MAX_ORDERS = 200
+const MAX_PENDING = 20
 
 // Everything in this module belongs to the logged in user's own wallet.
 router.use(requireAuth)
 
-function round2(value) {
-  return Math.round(value * 100) / 100
-}
+/**
+ * The wallet, with any after-hours orders filled first if the market has since
+ * opened. Doing it on read means a queued order comes good the next time the
+ * page is looked at, with no scheduler to run.
+ */
+async function accountFor(userId, { settle = true } = {}) {
+  const account =
+    (await PaperAccount.findOne({ user: userId })) ||
+    (await PaperAccount.create({ user: userId }))
 
-async function accountFor(userId) {
-  const existing = await PaperAccount.findOne({ user: userId })
-  if (existing) return existing
-  return PaperAccount.create({ user: userId })
+  if (settle) await processPending(account)
+  return account
 }
 
 function shape(account) {
@@ -43,10 +50,13 @@ function shape(account) {
         name: o.name,
         action: o.action,
         qty: o.qty,
-        price: round2(o.price),
-        amount: round2(o.amount),
+        status: o.status || 'EXECUTED',
+        price: o.price === null || o.price === undefined ? null : round2(o.price),
+        amount: o.amount === null || o.amount === undefined ? null : round2(o.amount),
         realised: o.realised === null || o.realised === undefined ? null : round2(o.realised),
+        note: o.note || null,
         placedAt: o.placedAt,
+        executedAt: o.executedAt || null,
       })),
   }
 }
@@ -126,61 +136,89 @@ router.post(
     }
 
     const account = await accountFor(req.userId)
-    const price = round2(quote.price)
-    const amount = round2(qty * price)
-    const position = account.holdings.find((h) => h.symbol === symbol)
-
-    let realised = null
-
-    if (action === 'BUY') {
-      if (amount > account.cash) {
-        return res.status(400).json({
-          errors: {
-            form: `Not enough cash. This order needs ₹${amount.toLocaleString('en-IN')}.`,
-          },
-        })
-      }
-
-      account.cash = round2(account.cash - amount)
-
-      if (position) {
-        const totalQty = position.qty + qty
-        position.avgPrice = round2((position.qty * position.avgPrice + amount) / totalQty)
-        position.qty = totalQty
-      } else {
-        account.holdings.push({ symbol, name: quote.name || symbol, qty, avgPrice: price })
-      }
-    } else {
-      if (!position || position.qty < qty) {
-        return res.status(400).json({
-          errors: {
-            form: position
-              ? `You only hold ${position.qty} shares of ${symbol}.`
-              : `You do not hold any ${symbol}.`,
-          },
-        })
-      }
-
-      realised = round2(qty * (price - position.avgPrice))
-      account.cash = round2(account.cash + amount)
-      account.realised = round2(account.realised + realised)
-      position.qty -= qty
-      if (position.qty === 0) {
-        account.holdings = account.holdings.filter((h) => h.symbol !== symbol)
-      }
-    }
-
+    const name = quote.name || symbol
     const sequence = account.orders.length + 1
-    account.orders.push({
-      ref: `ORD-${String(sequence).padStart(4, '0')}`,
+    const ref = `ORD-${String(sequence).padStart(4, '0')}`
+
+    const order = {
+      ref,
       symbol,
-      name: quote.name || symbol,
+      name,
       action,
       qty,
-      price,
-      amount,
-      realised,
       placedAt: new Date(),
+    }
+
+    // Outside market hours the order is queued rather than filled. Filling it
+    // against a stale closing price would book a profit or loss on a trade the
+    // exchange never saw.
+    if (!isTrading([quote])) {
+      const queued = account.orders.filter((o) => o.status === 'PENDING').length
+      if (queued >= MAX_PENDING) {
+        return res.status(400).json({
+          errors: { form: `You already have ${MAX_PENDING} orders waiting for the open.` },
+        })
+      }
+
+      // Catching the obvious problems now is kinder than letting it sit all
+      // night only to be rejected at the bell.
+      const estimate = round2(qty * quote.price)
+      if (action === 'BUY' && estimate > account.cash) {
+        return res.status(400).json({
+          errors: {
+            form: `Not enough cash. At the last price this needs about ₹${estimate.toLocaleString('en-IN')}.`,
+          },
+        })
+      }
+      if (action === 'SELL') {
+        const held = account.holdings.find((h) => h.symbol === symbol)
+        const alreadyQueued = account.orders
+          .filter((o) => o.status === 'PENDING' && o.action === 'SELL' && o.symbol === symbol)
+          .reduce((sum, o) => sum + o.qty, 0)
+
+        if (!held || held.qty < qty + alreadyQueued) {
+          return res.status(400).json({
+            errors: {
+              form: held
+                ? `You hold ${held.qty} shares of ${symbol}${alreadyQueued ? ` and ${alreadyQueued} are already queued to sell` : ''}.`
+                : `You do not hold any ${symbol}.`,
+            },
+          })
+        }
+      }
+
+      account.orders.push({ ...order, status: 'PENDING' })
+      if (account.orders.length > MAX_ORDERS) {
+        account.orders = account.orders.slice(-MAX_ORDERS)
+      }
+      await account.save()
+
+      return res.json({
+        account: shape(account),
+        queued: {
+          ref,
+          symbol,
+          name,
+          action,
+          qty,
+          estimate,
+          opensAt: nextOpenLabel(),
+        },
+      })
+    }
+
+    const result = fill(account, order, round2(quote.price))
+    if (!result.ok) {
+      return res.status(400).json({ errors: { form: result.reason } })
+    }
+
+    account.orders.push({
+      ...order,
+      status: 'EXECUTED',
+      price: result.price,
+      amount: result.amount,
+      realised: result.realised,
+      executedAt: new Date(),
     })
 
     // Keep the document bounded; the oldest orders drop off first.
@@ -192,7 +230,15 @@ router.post(
 
     res.json({
       account: shape(account),
-      fill: { symbol, name: quote.name || symbol, action, qty, price, amount, realised },
+      fill: {
+        symbol,
+        name,
+        action,
+        qty,
+        price: result.price,
+        amount: result.amount,
+        realised: result.realised,
+      },
     })
   }),
 )

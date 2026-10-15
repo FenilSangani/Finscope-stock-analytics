@@ -1,8 +1,12 @@
 const express = require('express')
 const asyncHandler = require('../middleware/asyncHandler')
 const { fetchQuotes, fetchCloses, cleanSymbol } = require('../utils/market')
+const { isTrading, withinSession, istDate, nextOpenLabel } = require('../utils/marketHours')
 
 const router = express.Router()
+
+// Any liquid stock will do; it is only read for the session its price is from.
+const REFERENCE_SYMBOL = 'RELIANCE'
 
 // Batch price lookups shared by the modules that show many stocks at once:
 // the watchlist and the paper trading wallet.
@@ -14,6 +18,35 @@ function symbolList(raw) {
     .filter(Boolean)
     .slice(0, 25)
 }
+
+/**
+ * Whether the exchange is trading, decided from the data rather than the clock
+ * alone, so a holiday reads as closed without keeping a holiday list.
+ */
+router.get(
+  '/status',
+  asyncHandler(async (req, res) => {
+    let quotes = []
+    try {
+      quotes = await fetchQuotes([REFERENCE_SYMBOL])
+    } catch {
+      quotes = []
+    }
+
+    const open = isTrading(quotes)
+    const inWindow = withinSession()
+    const lastSession = quotes[0]?.asOf || null
+
+    res.json({
+      open,
+      // Inside trading hours but nothing has traded today: a market holiday.
+      holiday: inWindow && !open && Boolean(lastSession),
+      lastSession,
+      today: istDate(),
+      opensAt: open ? null : nextOpenLabel(),
+    })
+  }),
+)
 
 router.get(
   '/quotes',

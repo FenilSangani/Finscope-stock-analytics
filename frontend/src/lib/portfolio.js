@@ -104,6 +104,55 @@ export function buildValueCurve({ dates, closes, orders, cash, holdings, liveVal
   return { dates, values, missing: [...missing] }
 }
 
+/** The calendar day of a timestamp in India, as YYYY-MM-DD. */
+function istDay(timestamp) {
+  return new Date(new Date(timestamp).getTime() + 330 * 60000).toISOString().slice(0, 10)
+}
+
+/**
+ * The day's profit on one holding, the way a broker counts it.
+ *
+ * Shares carried in from before today are measured against yesterday's close.
+ * Shares bought during today's session are measured against what was actually
+ * paid for them — otherwise buying at any price other than the previous close
+ * would show an instant profit or loss that nobody earned.
+ */
+export function dayPnlFor(holding, orders, quote) {
+  if (!quote || !quote.price) return 0
+
+  const session = quote.asOf
+  const ltp = quote.price
+
+  let todayQty = 0
+  let todayCost = 0
+
+  if (session) {
+    for (const order of orders) {
+      if (order.symbol !== holding.symbol) continue
+      if ((order.status || 'EXECUTED') !== 'EXECUTED') continue
+
+      const filledOn = istDay(order.executedAt || order.placedAt)
+      if (filledOn !== session) continue
+
+      if (order.action === 'BUY') {
+        todayQty += order.qty
+        todayCost += order.amount
+      } else {
+        todayQty -= order.qty
+        todayCost -= order.amount
+      }
+    }
+  }
+
+  // Never claim more of today's buying than is still held.
+  todayQty = Math.max(0, Math.min(todayQty, holding.qty))
+  const carried = holding.qty - todayQty
+  const paidToday = todayQty > 0 ? todayCost / todayQty : 0
+
+  const prevClose = quote.prevClose ?? ltp
+  return round2(carried * (ltp - prevClose) + todayQty * (ltp - paidToday))
+}
+
 /** "15 Oct" style labels for the chart axis. */
 export function shortLabel(isoDate) {
   const [year, month, day] = isoDate.split('-')
