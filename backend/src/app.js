@@ -65,6 +65,22 @@ async function requireDB(req, res, next) {
   }
 }
 
+// A plain index, so opening the API root says what it is rather than 404ing.
+app.get('/', (req, res) =>
+  res.json({
+    service: 'FinScope API',
+    status: 'ok',
+    endpoints: [
+      '/api/health',
+      '/api/auth/login',
+      '/api/stocks/:symbol',
+      '/api/market/quotes?symbols=RELIANCE,TCS',
+      '/api/paper/account',
+      '/api/watchlists',
+    ],
+  }),
+)
+
 app.get('/api/health', (req, res) => res.json({ status: 'ok' }))
 
 app.use('/api/auth', requireDB, authRoutes)
@@ -72,6 +88,15 @@ app.use('/api/paper', requireDB, paperRoutes)
 app.use('/api/watchlists', requireDB, watchlistRoutes)
 app.use('/api/stocks', stockRoutes)
 app.use('/api/market', marketRoutes)
+
+// Registered after every route, so it only sees requests nothing matched. It
+// names the path that actually arrived, which separates a typo from a host
+// rewriting the path before the app ever sees it.
+app.use((req, res) => {
+  res.status(404).json({
+    errors: { form: `No endpoint at '${req.path}'. See / for the list of endpoints.` },
+  })
+})
 
 app.use(errorHandler)
 
