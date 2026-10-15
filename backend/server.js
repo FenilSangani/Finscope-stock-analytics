@@ -1,5 +1,9 @@
-// Local entry point. On Vercel the same app is exported from api/index.js
-// instead, because serverless functions are handed a request rather than a port.
+// The entry point both locally and on Vercel, which runs `npm start` and
+// supplies PORT itself.
+//
+// There is deliberately no api/ directory here: Vercel reserves /api/* for
+// file based functions, and a file there would swallow every /api request
+// before this app ever saw it.
 const app = require('./src/app')
 const connectDB = require('./src/config/db')
 
