@@ -36,21 +36,36 @@ def _num(value):
     return None if math.isnan(f) or math.isinf(f) else f
 
 
-def _market_cap(info: dict, price: float | None) -> float | None:
-    """Market capitalisation, worked out from share count if Yahoo omits it.
+def _market_cap(info: dict, price: float | None, ticker=None) -> float | None:
+    """Market capitalisation, from whichever source actually has the numbers.
 
-    Yahoo drops `marketCap` from its summary now and then — the same stock can
-    have it one minute and not the next — which left the figure blank on screen.
-    Shares outstanding times the live price is the same number, so the display
-    stays filled in instead of showing a dash for no good reason.
+    Yahoo drops `marketCap` from its summary for some stocks and not others,
+    and which ones varies by where the request comes from — TCS came back
+    without it from the deployed service while returning every other field.
+    Share count times the live price is the same figure, and the count is
+    available from a second endpoint even when the summary omits it, so this
+    tries each source in turn rather than giving up and showing a dash.
     """
     direct = _num(info.get("marketCap"))
     if direct:
         return direct
 
+    if not price:
+        return None
+
     shares = _num(info.get("sharesOutstanding")) or _num(info.get("impliedSharesOutstanding"))
-    if shares and price:
+    if shares:
         return shares * price
+
+    # fast_info comes from Yahoo's quote endpoint rather than the summary, so
+    # it often still has the share count when the summary does not.
+    if ticker is not None:
+        try:
+            shares = _num(ticker.fast_info["shares"])
+        except Exception:
+            shares = None
+        if shares:
+            return shares * price
 
     return None
 
@@ -347,7 +362,7 @@ def fetch_stock(symbol: str) -> dict | None:
             return None
         return round(value * (fx if convert else 1) / CRORE)
 
-    market_cap = _market_cap(info, price)
+    market_cap = _market_cap(info, price, ticker)
 
     payload = {
         "symbol": symbol,
@@ -455,10 +470,11 @@ def fetch_quote(symbol: str) -> dict | None:
 
     # Yahoo rate limits a long running process from time to time, and the
     # next call usually succeeds, so give it one more go before giving up.
+    ticker = yf.Ticker(f"{symbol}.NS")
     info = {}
     for attempt in (1, 2):
         try:
-            info = yf.Ticker(f"{symbol}.NS").info or {}
+            info = ticker.info or {}
             if info:
                 break
         except Exception as err:
@@ -483,7 +499,7 @@ def fetch_quote(symbol: str) -> dict | None:
         "changePct": round((change / prev_close) * 100, 2) if prev_close else 0,
         "peRatio": _num(info.get("trailingPE")),
         "roe": round(roe * 100, 2) if roe is not None else None,
-        "marketCap": round(cap / CRORE) if (cap := _market_cap(info, price)) else None,
+        "marketCap": round(cap / CRORE) if (cap := _market_cap(info, price, ticker)) else None,
     }
     cache.set(f"quote:{symbol}", quote, ttl_seconds=900)
     return quote
