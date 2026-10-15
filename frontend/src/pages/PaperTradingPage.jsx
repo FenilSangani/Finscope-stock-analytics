@@ -32,6 +32,7 @@ import {
 } from 'lucide-react'
 import Sidebar from '../components/dashboard/Sidebar'
 import {
+  cancelPaperOrder,
   fetchMarketCloses,
   fetchMarketQuotes,
   fetchMarketStatus,
@@ -95,6 +96,7 @@ const STATUS_BADGES = {
   EXECUTED: { label: 'Executed', className: 'bg-emerald-50 text-emerald-700' },
   PENDING: { label: 'Waiting for open', className: 'bg-amber-50 text-amber-700' },
   REJECTED: { label: 'Rejected', className: 'bg-red-50 text-red-600' },
+  CANCELLED: { label: 'Cancelled', className: 'bg-gray-100 text-gray-500' },
 }
 
 function Section({ icon: Icon, title, subtitle, children, right }) {
@@ -366,6 +368,16 @@ export default function PaperTradingPage() {
       setFlash({ tone: 'error', text: err?.errors?.form || 'Could not place that order.' })
     } finally {
       setBusy(false)
+    }
+  }
+
+  async function cancelOrder(ref) {
+    try {
+      const data = await cancelPaperOrder(ref)
+      setAccount(data.account)
+      setFlash({ tone: 'ok', text: `${ref} cancelled` })
+    } catch (err) {
+      setFlash({ tone: 'error', text: err?.errors?.form || 'Could not cancel that order.' })
     }
   }
 
@@ -878,6 +890,7 @@ export default function PaperTradingPage() {
                             'Amount',
                             'Status',
                             'Booked P&L',
+                            '',
                           ].map((h) => (
                             <th
                               key={h}
@@ -945,6 +958,16 @@ export default function PaperTradingPage() {
                                 >
                                   {signed(o.realised)}
                                 </span>
+                              )}
+                            </td>
+                            <td className="py-3 text-right">
+                              {o.status === 'PENDING' && (
+                                <button
+                                  onClick={() => cancelOrder(o.ref)}
+                                  className="rounded-lg px-2.5 py-1.5 text-xs font-semibold text-gray-500 transition hover:bg-gray-100 hover:text-red-600"
+                                >
+                                  Cancel
+                                </button>
                               )}
                             </td>
                           </tr>

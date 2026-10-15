@@ -27,7 +27,7 @@ const orderSchema = new mongoose.Schema(
     // has no price or amount until it actually fills.
     status: {
       type: String,
-      enum: ['EXECUTED', 'PENDING', 'REJECTED'],
+      enum: ['EXECUTED', 'PENDING', 'REJECTED', 'CANCELLED'],
       // Orders saved before this field existed were all immediate fills.
       default: 'EXECUTED',
     },

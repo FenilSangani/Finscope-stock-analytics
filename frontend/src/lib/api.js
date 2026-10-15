@@ -124,6 +124,10 @@ export function placePaperOrder({ symbol, action, qty }) {
   return authed('/api/paper/order', 'POST', { symbol, action, qty })
 }
 
+export function cancelPaperOrder(ref) {
+  return authed(`/api/paper/order/${encodeURIComponent(ref)}`, 'DELETE')
+}
+
 export function resetPaperAccount() {
   return authed('/api/paper/reset', 'POST', {})
 }

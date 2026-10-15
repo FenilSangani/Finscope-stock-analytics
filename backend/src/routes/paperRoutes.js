@@ -243,6 +243,32 @@ router.post(
   }),
 )
 
+// A queued order can be called off any time before the market opens. Once it
+// has filled there is nothing to cancel, so only pending ones are accepted.
+router.delete(
+  '/order/:ref',
+  asyncHandler(async (req, res) => {
+    const ref = String(req.params.ref || '').slice(0, 20)
+    const account = await accountFor(req.userId)
+    const order = account.orders.find((o) => o.ref === ref)
+
+    if (!order) {
+      return res.status(404).json({ errors: { form: 'That order is not in your order book.' } })
+    }
+    if (order.status !== 'PENDING') {
+      return res.status(400).json({
+        errors: { form: 'Only orders still waiting for the market open can be cancelled.' },
+      })
+    }
+
+    order.status = 'CANCELLED'
+    order.note = 'Cancelled before the market opened'
+    await account.save()
+
+    res.json({ account: shape(account) })
+  }),
+)
+
 router.post(
   '/reset',
   asyncHandler(async (req, res) => {
